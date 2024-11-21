@@ -55,10 +55,7 @@ def data_split(df, seed):
 
 # 2. Train Methods
 
-def train_fstModel():
-    return None
-
-def train_fsModel(config, writer, train_loader, val_loader, device, BATCH_SIZE):
+def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
     """ 
     Training procedure.
     """
@@ -74,8 +71,8 @@ def train_fsModel(config, writer, train_loader, val_loader, device, BATCH_SIZE):
     
     best_val_score = None
     val_loss = 0
-    auc= 0
-    daucPR = 0
+    auc= 0.
+    daucPR = 0.
     pat_log = 0
     avg_valLoss = 0
     avg_trainLoss = 0
@@ -103,7 +100,7 @@ def train_fsModel(config, writer, train_loader, val_loader, device, BATCH_SIZE):
             # plotting
             if batch % log_interval == 0 or batch == BATCH_SIZE - 1:
                 out = f'epoch:{epoch + 1}/{MAX_EPOCHS} batches:{batch:>04d}/{len(train_loader) - 1}'
-                out += f' avg-train_loss:{avg_trainLoss:.4f}, avg-val_loss:{avg_valLoss:.4f}, val-auc:{auc:.4f}, val-dauc_pr:{daucPR:.4f}'
+                out += f' avg-train_loss:{avg_trainLoss:.8f}, avg-val_loss:{avg_valLoss:.8f}, val-auc:{auc:.8f}, val-dauc_pr:{daucPR:.8f}'
 
                 # overwrite what's already been written
                 sys.stdout.write('\r' + ' ' * 400)
@@ -129,7 +126,7 @@ def train_fsModel(config, writer, train_loader, val_loader, device, BATCH_SIZE):
         auc = auc_score(model, val_loader, device)
 
         # choose evaluation metric for early stopping
-        stopping_metric = val_loss #auc #daucPR #val_loss -> (daucPR best results with weight decay for AUC and daucPR)
+        stopping_metric = daucPR #auc #daucPR #val_loss -> (daucPR best results with weight decay for AUC and daucPR)
 
         # logging tensorboard
         writer.add_scalar(f"{model.__class__.__name__}Average Train Loss", np.mean(losses), epoch)

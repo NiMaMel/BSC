@@ -24,8 +24,6 @@ class Model(nn.Module):
         # Create encoder
         self.encoder = nn.Sequential(*encoder)
         
-        # output dropout
-        
         # 2nd transformed by layernorm
         self.ln =  nn.LayerNorm(output_dim,elementwise_affine=False)
         

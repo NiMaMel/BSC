@@ -1,20 +1,20 @@
 import torch as torch
 import torch.nn as nn
 
-class Model(nn.Module):
-    def __init__(self, batch_size, input_dim, hidden_dim, output_dim, t_hidden_dim ,num_layers=1, t_num_layers=1, num_heads = 3, p = 0.1):
-        super(Model, self).__init__()
+class fstModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, t_hidden_dim, batch_size ,num_layers=1, t_num_layers=1, num_heads = 3, p = 0.1):
+        super(fstModel, self).__init__()
 
         # base requirements
-        self.batch_size = batch_size
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
         self.num_layers = num_layers
+        self.batch_size = batch_size
         self.p = p
 
         # transformer requirements
-        self.t_hidden_dim = t_hidden_dim # pytorch default 2048
+        self.t_hidden_dim = t_hidden_dim
         self.t_num_layers = t_num_layers
         self.num_heads = num_heads
         self.n_classes = 3
@@ -26,7 +26,7 @@ class Model(nn.Module):
             encoder.append(nn.Linear(self.input_dim, self.hidden_dim)) # default hiddendim == outputdim
             encoder.append(nn.SELU())
             encoder.append(nn.AlphaDropout(p=self.p))
-            self.input_dim = self.hidden_dim # added
+            input_dim = hidden_dim # added
 
         # - linear layer
         encoder.append(nn.Linear(self.input_dim, self.output_dim)) 
@@ -50,7 +50,7 @@ class Model(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(self.d_model, self.output_dim),
             nn.ReLU(),
-            nn.Linear(self.output_dim, 1)
+            nn.Linear(self.output_dim, self.n_classes)
             )
 
     def forward(self, query_mol, p_supp, n_supp,train=True):
@@ -60,16 +60,11 @@ class Model(nn.Module):
         n = self.ln(self.encoder(n_supp))
         q = self.ln(self.encoder(query_mol))
 
-        # get params for label encoding
-        device = p.device
-        n_supps = p.shape[1]
-        currentBatchSize = p.shape[0]
-        
         # Step2: Encode labels of query,as well as negative and positive supportset
-        pl = self.label_encoder( torch.ones(currentBatchSize, n_supps, dtype=torch.long).to(device) )
-        nl = self.label_encoder (torch.zeros(currentBatchSize, n_supps, dtype=torch.long).to(device) )
-        ql = self.label_encoder( torch.ones(currentBatchSize, dtype=torch.long).to(device) *2 )
-            
+        pl = self.label_encoder(torch.tensor([2] * self.batch_size))
+        nl = self.label_encoder(torch.tensor([0] * self.batch_size))
+        ql = self.label_encoder(torch.tensor([1] * self.batch_size))
+        
         # Step 3: Concatenate input embeddings with label embeddings
         p = torch.cat((p, pl), dim=-1)
         n = torch.cat((n, nl), dim=-1)
@@ -81,9 +76,11 @@ class Model(nn.Module):
         
         # Step 5: Pass through Transformer encoder
         out = self.transformer_encoder(q_s)
-        
+
         # Step 6: Get logits via Sigmoid Function of the first dim of MLP head
-        logits = torch.sigmoid(self.mlp(out[:, 0, :])).squeeze(1) # Shape: (batch_size)
+        logits = torch.sigmoid(self.mlp(out[:, 0, :])) 
         
-        return logits
-        
+        # Step 7: Get Prediction using  argmax 
+        prediction = torch.argmax(logits, dim=1)
+
+        return prediction 
