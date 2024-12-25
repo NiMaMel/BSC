@@ -1,3 +1,4 @@
+import os
 import sys
 import numpy as np
 import pandas as pd
@@ -14,6 +15,14 @@ from sklearn.manifold import TSNE
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score, average_precision_score,accuracy_score, f1_score
 
+# 0. Little Helpers
+
+def shutdown_pc():
+    """
+    Shuts down the PC after a delay.
+    """
+    print("Shutting down the PC...")
+    os.system("shutdown /s /t 60")  # 60-second delay before shutdown
 
 # 1. Datasplit Methods
 
@@ -55,7 +64,10 @@ def data_split(df, seed):
 
 # 2. Train Methods
 
-def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
+def train_fstModel():
+    return None
+
+def train_fsModel(config, writer, train_loader, val_loader, device, BATCH_SIZE):
     """ 
     Training procedure.
     """
@@ -66,13 +78,14 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
     MAX_EPOCHS = config['max_epochs']
     PATIENCE = config['patience']
     log_interval = config['log_interval']
-    save_path = config['save_path']
     val_interval = config['val_interval']  
+    save_path = config['save_path']
+    folder_path = os.path.dirname(save_path)  
     
     best_val_score = None
     val_loss = 0
-    auc= 0.
-    daucPR = 0.
+    auc= 0
+    daucPR = 0
     pat_log = 0
     avg_valLoss = 0
     avg_trainLoss = 0
@@ -100,7 +113,7 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
             # plotting
             if batch % log_interval == 0 or batch == BATCH_SIZE - 1:
                 out = f'epoch:{epoch + 1}/{MAX_EPOCHS} batches:{batch:>04d}/{len(train_loader) - 1}'
-                out += f' avg-train_loss:{avg_trainLoss:.8f}, avg-val_loss:{avg_valLoss:.8f}, val-auc:{auc:.8f}, val-dauc_pr:{daucPR:.8f}'
+                out += f' avg-train_loss:{avg_trainLoss:.4f}, avg-val_loss:{avg_valLoss:.4f}, val-auc:{auc:.4f}, val-dauc_pr:{daucPR:.4f}'
 
                 # overwrite what's already been written
                 sys.stdout.write('\r' + ' ' * 400)
@@ -140,8 +153,14 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
             # also more patience in the beginning and less once it seems stable (e.g. after 20 epochs)
         if best_val_score is None or best_val_score < stopping_metric:
             best_val_score = stopping_metric
-            torch.save(model.state_dict(), save_path)
+
+            # Create the folder if it doesn't exist
+            if not os.path.exists(folder_path):
+                os.makedirs(folder_path)
+            
+            torch.save(model.state_dict(), save_path)     
             pat_log = 0
+       
         else:
             pat_log += 1
 
@@ -397,10 +416,15 @@ def eval_rf(y_hat,y_true):
 
 def mean_scores(val_scores, test_scores, rf_scores,output_csv_path):
 
+    save_dir = "results"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    os.path.join(save_dir, f"validation_{output_csv_path}")
+    
     # write results per seed to csv's
-    val_scores.to_csv(f"results/validation_{output_csv_path}", index=False)
-    test_scores.to_csv(f"results/test_{output_csv_path}", index=False)
-    rf_scores.to_csv(f"results/rf_{output_csv_path}", index=False)
+    val_scores.to_csv( os.path.join(save_dir, f"validation_{output_csv_path}"), index=False)
+    test_scores.to_csv(os.path.join(save_dir, f"test_{output_csv_path}"), index=False)
+    rf_scores.to_csv(os.path.join(save_dir, f"rf_{output_csv_path}"), index=False)
     
     # Compute mean scores excluding the 'Seed' column
     val_scores_mean = val_scores.drop(columns=['Seed']).mean().to_frame().T

@@ -1,9 +1,13 @@
+import os
 import sys
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from collections import defaultdict
+
+import optuna
+from optuna.trial import TrialState
 
 import torch as torch
 import torch.nn as nn
@@ -14,6 +18,14 @@ from sklearn.manifold import TSNE
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score, average_precision_score,accuracy_score, f1_score
 
+# 0. Little Helpers
+
+def shutdown_pc():
+    """
+    Shuts down the PC after a delay.
+    """
+    print("Shutting down the PC...")
+    os.system("shutdown /s /t 60")  # 60-second delay before shutdown
 
 # 1. Datasplit Methods
 
@@ -39,7 +51,6 @@ def data_split(df, seed):
     train_targets = unique_targets[:n_train]
     val_targets = unique_targets[n_train:n_train+n_val]
     test_targets = unique_targets[n_train+n_val:]
-
 
     # Filter the DataFrame based on the selected tasks for each set
     train_triplet = df[(df['target_id'].isin(train_targets))]
@@ -69,8 +80,9 @@ def train_fsModel(config, writer, train_loader, val_loader, device, BATCH_SIZE):
     MAX_EPOCHS = config['max_epochs']
     PATIENCE = config['patience']
     log_interval = config['log_interval']
-    save_path = config['save_path']
     val_interval = config['val_interval']  
+    save_path = config['save_path']
+    folder_path = os.path.dirname(save_path)  
     
     best_val_score = None
     val_loss = 0
@@ -129,7 +141,7 @@ def train_fsModel(config, writer, train_loader, val_loader, device, BATCH_SIZE):
         auc = auc_score(model, val_loader, device)
 
         # choose evaluation metric for early stopping
-        stopping_metric = val_loss #auc #daucPR #val_loss -> (daucPR best results with weight decay for AUC and daucPR)
+        stopping_metric = daucPR #auc #daucPR #val_loss -> (daucPR best results with weight decay for AUC and daucPR)
 
         # logging tensorboard
         writer.add_scalar(f"{model.__class__.__name__}Average Train Loss", np.mean(losses), epoch)
@@ -143,8 +155,14 @@ def train_fsModel(config, writer, train_loader, val_loader, device, BATCH_SIZE):
             # also more patience in the beginning and less once it seems stable (e.g. after 20 epochs)
         if best_val_score is None or best_val_score < stopping_metric:
             best_val_score = stopping_metric
-            torch.save(model.state_dict(), save_path)
+
+            # Create the folder if it doesn't exist
+            if not os.path.exists(folder_path):
+                os.makedirs(folder_path)
+            
+            torch.save(model.state_dict(), save_path)     
             pat_log = 0
+       
         else:
             pat_log += 1
 
@@ -400,10 +418,15 @@ def eval_rf(y_hat,y_true):
 
 def mean_scores(val_scores, test_scores, rf_scores,output_csv_path):
 
+    save_dir = "results"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    os.path.join(save_dir, f"validation_{output_csv_path}")
+    
     # write results per seed to csv's
-    val_scores.to_csv(f"results/validation_{output_csv_path}", index=False)
-    test_scores.to_csv(f"results/test_{output_csv_path}", index=False)
-    rf_scores.to_csv(f"results/rf_{output_csv_path}", index=False)
+    val_scores.to_csv( os.path.join(save_dir, f"validation_{output_csv_path}"), index=False)
+    test_scores.to_csv(os.path.join(save_dir, f"test_{output_csv_path}"), index=False)
+    rf_scores.to_csv(os.path.join(save_dir, f"rf_{output_csv_path}"), index=False)
     
     # Compute mean scores excluding the 'Seed' column
     val_scores_mean = val_scores.drop(columns=['Seed']).mean().to_frame().T
@@ -461,3 +484,135 @@ def plot_tsne_embeddings(embed, encoded_embed, labels, task_name, title, seed, s
         plt.savefig('visualizations/embed_comparison.png')
     
     plt.show()
+
+# 5. Hyperparameter tuning
+
+def hpSearchTrain(config, writer, train_loader, val_loader, device, BATCH_SIZE, trial=None):
+    """
+    Training procedure with Optuna trial pruning integration.
+    """
+    model = config['model']
+    optimizer = config['optimizer']
+    criterion = config['criterion']
+
+    MAX_EPOCHS = config['max_epochs']
+    PATIENCE = config['patience']
+    log_interval = config['log_interval']
+    val_interval = config['val_interval']
+    save_path = config['save_path']
+    folder_path = os.path.dirname(save_path)
+
+    auc= 0
+    daucPR = 0
+    pat_log = 0
+    avg_valLoss = 0
+    avg_trainLoss = 0
+    best_val_score = None
+
+    for epoch in range(MAX_EPOCHS):
+
+        losses = []
+        val_losses = []
+        model.train(True)
+
+        for batch, data_ in enumerate(train_loader):
+            # Reset gradients
+            optimizer.zero_grad()
+
+            # Compute output
+            q, p, n, t = (
+                data_["query_mol"].to(device),
+                data_["p_supp"].to(device),
+                data_["n_supp"].to(device),
+                data_["task_id"].to(device),
+            )
+            preds = model(q, p, n)
+
+            # Compute loss
+            loss = criterion(preds, data_["query_label"].to(device))
+            loss.backward()
+            optimizer.step()
+            losses.append(loss.cpu().detach())
+            avg_trainLoss = np.mean(losses)
+
+            # Logging
+            if batch % log_interval == 0 or batch == BATCH_SIZE - 1:
+                out = (
+                    f'epoch:{epoch + 1}/{MAX_EPOCHS} batches:{batch:>04d}/{len(train_loader) - 1}'
+                   f' avg-train_loss:{avg_trainLoss:.4f}, avg-val_loss:{avg_valLoss:.4f}, val-auc:{auc:.4f}, val-dauc_pr:{daucPR:.4f}'
+                )
+                sys.stdout.write("\r" + " " * 400)
+                sys.stdout.write(f"\r{out}")
+                sys.stdout.flush()
+
+        # Compute validation loss
+        if (epoch + 1) % val_interval == 0:
+            model.eval()
+            with torch.no_grad():
+                for vdata_ in val_loader:
+                    q, p, n, t = (
+                        vdata_["query_mol"].to(device),
+                        vdata_["p_supp"].to(device),
+                        vdata_["n_supp"].to(device),
+                        vdata_["task_id"].to(device),
+                    )
+                    preds = model(q, p, n, train=False)
+                    val_loss = criterion(preds, vdata_["query_label"].to(device))
+                    val_losses.append(val_loss.cpu().detach())
+                    avg_valLoss = np.mean(val_losses)
+
+        del preds, loss
+
+        # Evaluation metrics
+        daucPR = dauc_pr(model, val_loader, device)
+        auc = auc_score(model, val_loader, device)
+
+        # Choose evaluation metric for early stopping
+        stopping_metric = daucPR  # Can also use `auc` or `val_loss`
+
+        # Report metric to Optuna for pruning
+        if trial is not None:
+            trial.report(stopping_metric, step=epoch)
+
+            # Check if trial should be pruned
+            if trial.should_prune():
+                print("\nTrial was pruned...")
+                raise optuna.TrialPruned()
+
+        # TensorBoard Logging
+        writer.add_scalar(f"{model.__class__.__name__} Average Train Loss", avg_trainLoss, epoch)
+        if len(val_losses) > 0:
+            writer.add_scalar(f"{model.__class__.__name__} Average Validation Loss", avg_valLoss, epoch)
+        writer.add_scalar(f"{model.__class__.__name__} Validation AUC", auc, epoch)
+        writer.add_scalar(f"{model.__class__.__name__} Validation ΔAUC-PR", daucPR, epoch)
+
+        # Save best model
+        if best_val_score is None or best_val_score < stopping_metric:
+            best_val_score = stopping_metric
+
+            # Create the folder if it doesn't exist
+            if not os.path.exists(folder_path):
+                os.makedirs(folder_path)
+
+            torch.save(model.state_dict(), save_path)
+            pat_log = 0
+        else:
+            pat_log += 1
+
+        # Early stopping
+        if pat_log == PATIENCE:
+            break
+
+    print("\nFinished trial...")
+
+def suggest_divisible_output_dim(trial, num_heads, minOut,maxOut ,encode_labels = True):
+    # Determine the multiplier for d_model based on encodeLabels
+    multiplier = 2 if encode_labels else 1
+
+    # Find valid output_dim values
+    valid_output_dims = [
+        dim for dim in range(minOut, maxOut + 1)
+        if (dim * multiplier) % num_heads == 0
+    ]
+    # Suggest from valid values
+    return trial.suggest_categorical("output_dim", valid_output_dims)

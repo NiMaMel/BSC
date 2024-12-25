@@ -12,10 +12,10 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from fs_model import Model
-from dataset_modul import Dataset
-from preprocessing import preprocessing
-from utils import data_split, train_rf, train_model, combined_metrics, eval_rf, mean_scores
+from models.fst_model import Model
+from data.dataset_modul import Dataset
+from utils.preprocessing import preprocessing
+from utils.utils import shutdown_pc, data_split, train_rf, train_fsModel, combined_metrics, eval_rf, mean_scores
 
 # Preparations
 
@@ -34,14 +34,18 @@ else:
 print(f"device set:{torch.cuda.get_device_name(device_id)}\n")
 
 #default config -> best results
-with open('default_config.json') as json_file:
-    model_config = json.load(json_file)
+#with open('configs/fst_config.json') as json_file:
+#    model_config = json.load(json_file)
 
 #with open('default_config_no_wdecay.json') as json_file:
 #    model_config = json.load(json_file)
 
+# hp search config
+with open('configs/hpSearch_config.json') as json_file:
+    model_config = json.load(json_file)
+
 # 1. Load Dataset and create Tiplet-Df
-sider = pd.read_csv("datasets/sider.csv")
+sider = pd.read_csv("data/datasets/sider.csv")
 triplets = [(i,j,row.iloc[j]) for i,row in sider.iterrows() for j in range(1,len(row))]
 triplet_df = pd.DataFrame(triplets, columns=['mol_id', 'target_id', 'label'])
 
@@ -61,7 +65,8 @@ for i, seed in enumerate(seeds):
     torch.manual_seed(seed)
 
     # 3. Initialize Model
-    model = Model(model_config["input_dim"], model_config["hidden_dim"],model_config["output_dim"], model_config["num_layers"], model_config["p"])
+    model_params = {k: v for k, v in model_config.items() if k not in ['opt_lr', 'weight_decay']}
+    model = Model(**model_params) 
     model.to(device)
 
     criterion = nn.BCELoss()
@@ -89,13 +94,13 @@ for i, seed in enumerate(seeds):
         "patience": 4,
         "log_interval": 100,
         "val_interval": 1,  # set higher to fasten up the process of training
-        "save_path": f"{os.path.join('models', f'model_{seed}_run{i+1}')}.mdl"
+        "save_path": f"{os.path.join('trainedModels', f'model_{seed}_run{i+1}')}.mdl"
     }
 
-    log_dir = log_dir = f"runs/run_seeds_{datetime.now().strftime('%d-%m-%Y_%Hh-%Mm-%Ss')}_{seed}"
+    log_dir = f"runs/run_seeds_{datetime.now().strftime('%d-%m-%Y_%Hh-%Mm-%Ss')}_{seed}"
     writer = SummaryWriter(log_dir=log_dir)
     
-    train_model(train_config, writer, train_loader, val_loader, device, BATCH_SIZE)
+    train_fsModel(train_config, writer, train_loader, val_loader, device, BATCH_SIZE)
 
     # 6. Evaluation
 
@@ -123,7 +128,8 @@ for i, seed in enumerate(seeds):
 
 print("Experiment done!\n")
 
-avg_val_scores, avg_test_scores, avg_rf_scores = mean_scores(val_scores, test_scores, rf_scores,"results.csv")
+avg_val_scores, avg_test_scores, avg_rf_scores = mean_scores(val_scores, test_scores, rf_scores,"results_wOLabelEncoding.csv")
 print(f"{avg_val_scores=}\n{avg_test_scores=}\n{avg_rf_scores=}")
 
-
+# when done shot down pc with 60s delay
+#shutdown_pc()
