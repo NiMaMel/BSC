@@ -11,82 +11,69 @@ from sklearn.preprocessing import StandardScaler
 from rdkit import RDLogger
 RDLogger.DisableLog('rdApp.*') 
 
-def preprocessing(df):
-    
-    smiles_list = df["smiles"].tolist()
-    
-    ecfps= []
-    mols = []
 
+def preprocessing(df, train_triplet = None):
+
+    # Step1: Check if there are Molecules which have no meassurements for train tasks
+    exclusionNeeded = False
+    if train_triplet is not None:
+        exclude = train_triplet.groupby('mol_id')['label'].apply(lambda x: x.isna().all()).loc[lambda x: x].index.tolist()
+
+        if len(exclude)!= 0:
+           exclusionNeeded = True
+    
+    # Step 2: Extract SMILES and initialize storage
+    smiles_list = df["smiles"].tolist()
+    ecfps = []  # Container for ECFP fingerprints
+    mols = []   # Container for molecular objects
+
+    # Step 3: Generate molecular objects and fingerprints
     for smiles in smiles_list:
-        
-        ### create mol objects
+        # Convert SMILES to RDKit molecular object
         mol = Chem.MolFromSmiles(smiles)
         mols.append(mol)
 
-        ### create ECFP fingerprints -> shape (1427,2048)
+        # Compute ECFP fingerprints
         fp_sparseVec = rdFingerprintGenerator.GetCountFPs(
             [mol], fpType=rdFingerprintGenerator.MorganFP
-            )[0]
-    
-        fp = np.zeros((0,), np.int8)  # Generate target pointer to fill
+        )[0]
+        fp = np.zeros((0,), np.int8)  # Create target pointer to fill
         DataStructs.ConvertToNumpyArray(fp_sparseVec, fp)
-        
         ecfps.append(fp)
     
-    # check number of mols and shape of fingerprints
-    #print(f"nMols: {len(mols)}")
-    
-    ### create descriptors -> shape (1427, 200 )
-    
-    filter = list(range(17,25))
+    # Step 4: Compute RDKit descriptors for each molecule
+    # Filter out certain descriptors by index 
+    filter = list(range(17, 25))
     real_descr = [i for i in range(208) if i not in filter]
-    total_mols = len(mols)
     
-    rdkit_descriptors = []
-    
-    for i,mol in enumerate(mols):
+    rdkit_descriptors = []  # Container for descriptor vectors
+    for i, mol in enumerate(mols):
+        descrs = [calc_fn(mol) for _, calc_fn in Descriptors._descList]  # All descriptors
+        descrs = np.array(descrs)[real_descr]  # Filter unwanted descriptors
+        rdkit_descriptors.append(descrs)
 
-        #if i % 400 == 0:
-        #    print(f'... processing mol {i} of {total_mols}')
-    
-        descrs = list()
-        for descr in Descriptors._descList:
-            _, descr_calc_fn = descr
-            descrs.append(descr_calc_fn(mol)) 
-        
-        descrs = np.array(descrs) # creates vec of shape 208
-        descrs = descrs[real_descr] # uses only 200 "important" descrs # ask why 200
-        rdkit_descriptors.append(descrs) # creates a nested list of descr-vecs
-
+    # Convert descriptor list to numpy array
     rdkit_descriptors = np.array(rdkit_descriptors) # convert to numpy
 
-    ### compute quantils and scale desriptors # only train data!
-    
-    rdkit_descriptors_quantils = np.zeros_like(rdkit_descriptors)
-    
-    for column in range(rdkit_descriptors.shape[1]):
-        raw_values_ecdf = rdkit_descriptors[:,column].reshape(-1) # train ( -1 flattens array for ECDF() )
-        raw_values = rdkit_descriptors[:,column] # val,test or train 
+    # Step 5: Quantile normalization for descriptors
+    if exclusionNeeded:
+        trdkit_descriptors = np.delete(rdkit_descriptors,exclude,axis=0) # Filter descriptors for training molecules only (not neccessary for sider)
+    else:
+        trdkit_descriptors = rdkit_descriptors
         
+    rdkit_descriptors_quantils = np.zeros_like(rdkit_descriptors)
+    for column in range(rdkit_descriptors.shape[1]): 
+        raw_values_ecdf = trdkit_descriptors[:, column].reshape(-1)  #  Flatten for ECDF 
+        raw_values = rdkit_descriptors[:, column]  # Raw column values
+
         ecdf = ECDF(raw_values_ecdf)
         quantils = ecdf(raw_values)
-        rdkit_descriptors_quantils[:,column] = quantils
-        
-    #print(f"min and max quantil: {np.min(rdkit_descriptors_quantils),np.max(rdkit_descriptors_quantils)}")
-    
-    ### Stack and Scale -> shape (1427,2248)
-    scaler = StandardScaler()
-    
+        rdkit_descriptors_quantils[:, column] = quantils
+
+    # Step 6: Stack & Scale
     data = np.hstack([ecfps, rdkit_descriptors_quantils])
-    data = scaler.fit_transform(data)
+    scaler = StandardScaler()
+    data = scaler.fit_transform(data) # -> need to adapt for tox
 
     print("Preprocessing done...\n")
-    #print(f"min and max of data after scaling: {np.min(data),np.max(data)}")
-    #print(f"data.shape: {data.shape}\n")
-    
-    return data
-    
-
-
-        
+    return data     

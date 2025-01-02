@@ -15,9 +15,11 @@ from torch.utils.tensorboard import SummaryWriter
 from models.fst_model import Model
 from data.dataset_modul import Dataset
 from utils.preprocessing import preprocessing
-from utils.utils import shutdown_pc, data_split, train_rf, train_fsModel, combined_metrics, eval_rf, mean_scores
+from utils.utils import shutdown_pc, data_split, train_rf, train_model, combined_metrics, eval_rf, mean_scores
 
-# Preparations
+# dataset paths
+sider_path = "data/datasets/sider.csv"
+tox_path = "data/datasets/toxcast_data.csv"
 
 # set hardcoded seed to generate 10 random seeds for the experiments
 np.random.seed(42)
@@ -45,12 +47,12 @@ with open('configs/hpSearch_config.json') as json_file:
     model_config = json.load(json_file)
 
 # 1. Load Dataset and create Tiplet-Df
-sider = pd.read_csv("data/datasets/sider.csv")
-triplets = [(i,j,row.iloc[j]) for i,row in sider.iterrows() for j in range(1,len(row))]
+dataset = pd.read_csv(sider_path)
+triplets = [(i,j,row.iloc[j]) for i,row in dataset.iterrows() for j in range(1,len(row))]
 triplet_df = pd.DataFrame(triplets, columns=['mol_id', 'target_id', 'label'])
 
 # 2. Preprocessing
-data = preprocessing(sider)
+data = preprocessing(dataset)
 
 # Experiments
 val_scores = pd.DataFrame([])
@@ -75,9 +77,9 @@ for i, seed in enumerate(seeds):
     # 4. Train-split and Dataloader
     train_triplet, val_triplet, test_triplet = data_split(triplet_df, seed)
 
-    train_set = Dataset(data, sider, train_triplet, supp=8, seed=seed)
-    val_set = Dataset(data, sider, val_triplet, supp=8, train=False, seed=seed)
-    test_set = Dataset(data, sider, test_triplet, supp=8, train=False, seed=seed)
+    train_set = Dataset(data, dataset, train_triplet, supp=8, seed=seed)
+    val_set = Dataset(data, dataset, val_triplet, supp=8, train=False, seed=seed)
+    test_set = Dataset(data, dataset, test_triplet, supp=8, train=False, seed=seed)
 
     BATCH_SIZE = model_config["batch_size"]
     train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
@@ -100,7 +102,7 @@ for i, seed in enumerate(seeds):
     log_dir = f"runs/run_seeds_{datetime.now().strftime('%d-%m-%Y_%Hh-%Mm-%Ss')}_{seed}"
     writer = SummaryWriter(log_dir=log_dir)
     
-    train_fsModel(train_config, writer, train_loader, val_loader, device, BATCH_SIZE)
+    train_model(train_config, writer, train_loader, val_loader, device, BATCH_SIZE)
 
     # 6. Evaluation
 
@@ -114,7 +116,7 @@ for i, seed in enumerate(seeds):
     test_score.insert(0, "Seed", seed)
 
     # 7. Compare to RF Baseline
-    y_hats_proba, y_hats_class, true_labels = train_rf(sider, data, test_triplet, seed, 1000, shuffle=True)
+    y_hats_proba, y_hats_class, true_labels = train_rf(dataset, data, test_triplet, seed, 1000, shuffle=True)
     rf_score = eval_rf(y_hats_class, true_labels)
     rf_score.insert(0, "Seed", seed)
 

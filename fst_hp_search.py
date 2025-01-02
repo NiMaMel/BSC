@@ -22,10 +22,15 @@ from data.dataset_modul import Dataset
 from utils.preprocessing import preprocessing
 from utils.utils import  data_split, hpSearchTrain, auc_score, dauc_pr
 
-seed = 42
+#seed = 42
+seed = 6265 # worst seed
 
 np.random.seed(seed)
 torch.manual_seed(seed)
+
+# dataset paths
+sider_path = "data/datasets/sider.csv"
+tox_path = "data/datasets/toxcast_data.csv"
 
 # cuda setting
 if torch.cuda.is_available():
@@ -36,12 +41,12 @@ else:
 print(f"device set:{torch.cuda.get_device_name(device_id)}\n")
 
 # 1. Load Dataset and create Tiplet-Df
-sider = pd.read_csv("data/datasets/sider.csv")
-triplets = [(i,j,row.iloc[j]) for i,row in sider.iterrows() for j in range(1,len(row))]
+dataset = pd.read_csv(sider_path)
+triplets = [(i,j,row.iloc[j]) for i,row in dataset.iterrows() for j in range(1,len(row))]
 triplet_df = pd.DataFrame(triplets, columns=['mol_id', 'target_id', 'label'])
 
 # 2. Preprocessing
-data = preprocessing(sider)
+data = preprocessing(dataset)
 
 def objective(trial):
 
@@ -89,9 +94,9 @@ def objective(trial):
 
     train_triplet, val_triplet, test_triplet = data_split(triplet_df, seed)
 
-    train_set = Dataset(data, sider, train_triplet, supp=8, seed=seed)
-    val_set = Dataset(data, sider, val_triplet, supp=8, train=False, seed=seed)
-    test_set = Dataset(data, sider, test_triplet, supp=8, train=False, seed=seed) # not used
+    train_set = Dataset(data, dataset, train_triplet, supp=8, seed=seed)
+    val_set = Dataset(data, dataset, val_triplet, supp=8, train=False, seed=seed)
+    test_set = Dataset(data, dataset, test_triplet, supp=8, train=False, seed=seed) # not used
 
     BATCH_SIZE = params["batch_size"]
     train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
@@ -108,7 +113,7 @@ def objective(trial):
         "patience": 4,
         "log_interval": 100,
         "val_interval": 2,  # set higher to fasten up the process of training
-        "save_path": f"{os.path.join('hp_search_runs/models', f'model_hps')}.mdl"
+        "save_path":  os.path.join("hp_search_runs",os.path.join("models", "model_hps.mdl"))
     }
 
     writer = SummaryWriter()
@@ -129,7 +134,7 @@ if __name__ == "__main__":
     print("Trial started...\n")
 
     #pruner = MedianPruner()
-    pruner= ThresholdPruner(lower=0.22, n_warmup_steps=15)  # Prune if metric < lower after n_warmup_steps epcohs
+    pruner= ThresholdPruner(lower=0.10, n_warmup_steps=5)  # Prune if metric < lower after n_warmup_steps epcohs
 
     study = optuna.create_study(direction="maximize", pruner=pruner)
 

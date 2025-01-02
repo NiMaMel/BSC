@@ -66,12 +66,9 @@ def data_split(df, seed):
 
 # 2. Train Methods
 
-def train_fstModel():
-    return None
-
-def train_fsModel(config, writer, train_loader, val_loader, device, BATCH_SIZE):
+def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
     """ 
-    Training procedure.
+    Training procedure for fstModel (should also be compatible for fsModel).
     """
     model = config['model']
     optimizer = config['optimizer']
