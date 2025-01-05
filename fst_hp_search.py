@@ -20,7 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 from models.fst_model import Model
 from data.dataset_modul import Dataset
 from utils.preprocessing import preprocessing
-from utils.utils import  data_split, hpSearchTrain, auc_score, dauc_pr
+from utils.utils import  hpSearchTrain, auc_score, dauc_pr
 
 #seed = 42
 seed = 6265 # worst seed
@@ -45,8 +45,11 @@ dataset = pd.read_csv(sider_path)
 triplets = [(i,j,row.iloc[j]) for i,row in dataset.iterrows() for j in range(1,len(row))]
 triplet_df = pd.DataFrame(triplets, columns=['mol_id', 'target_id', 'label'])
 
-# 2. Preprocessing
-data = preprocessing(dataset)
+# 2. Preprocessing & Dataspit
+data, dataset, train_triplet, val_triplet, _ = preprocessing(dataset, triplet_df, seed)
+
+train_set = Dataset(data, dataset, train_triplet, supp=8, seed=seed)
+val_set = Dataset(data, dataset, val_triplet, supp=8, train=False, seed=seed)
 
 def objective(trial):
 
@@ -90,18 +93,11 @@ def objective(trial):
     criterion = nn.BCELoss()
     optimizer = optim.AdamW(model.parameters(), lr=params["opt_lr"], weight_decay=params["weight_decay"])
 
-    # 4. Train-split and Dataloader
-
-    train_triplet, val_triplet, test_triplet = data_split(triplet_df, seed)
-
-    train_set = Dataset(data, dataset, train_triplet, supp=8, seed=seed)
-    val_set = Dataset(data, dataset, val_triplet, supp=8, train=False, seed=seed)
-    test_set = Dataset(data, dataset, test_triplet, supp=8, train=False, seed=seed) # not used
+    # 4. Dataloader
 
     BATCH_SIZE = params["batch_size"]
     train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=True)
-    test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=True) # not used
 
     # 5. Modeltraining
 

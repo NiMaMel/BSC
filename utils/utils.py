@@ -18,7 +18,7 @@ from sklearn.manifold import TSNE
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score, average_precision_score,accuracy_score, f1_score
 
-# 0. Little Helpers
+# 1. Little Helpers
 
 def shutdown_pc():
     """
@@ -26,43 +26,6 @@ def shutdown_pc():
     """
     print("Shutting down the PC...")
     os.system("shutdown /s /t 60")  # 60-second delay before shutdown
-
-# 1. Datasplit Methods
-
-def data_split(df, seed):
-    
-    np.random.seed(seed)
-        
-    # Unique tasks
-    unique_targets = df['target_id'].unique()
-    
-    # Shuffle the unique tasks 
-    np.random.shuffle(unique_targets)
-
-    # Define the proportions for each set
-    train_prop, val_prop, test_prop = 0.6, 0.2, 0.2
-
-    # Calculate the number of tasks for each set
-    n_tasks = len(unique_targets)
-    n_train = int(train_prop * n_tasks)
-    n_val = int(val_prop * n_tasks)
-
-    # Split the tasks into train, validation, and test sets
-    train_targets = unique_targets[:n_train]
-    val_targets = unique_targets[n_train:n_train+n_val]
-    test_targets = unique_targets[n_train+n_val:]
-
-    # Filter the DataFrame based on the selected tasks for each set
-    train_triplet = df[(df['target_id'].isin(train_targets))]
-    val_triplet = df[(df['target_id'].isin(val_targets))]
-    test_triplet = df[(df['target_id'].isin(test_targets))]
-    
-    # Display the lengths of the sets
-    #print(f"Train set length: {len(train_triplet)}")
-    #print(f"Validation set length: {len(val_triplet)}")
-    #print(f"Test set length: {len(test_triplet)}")
-
-    return train_triplet, val_triplet, test_triplet
 
 # 2. Train Methods
 
@@ -102,8 +65,12 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
             # compute output
             q, p, n, t = data_["query_mol"].to(device),data_["p_supp"].to(device),data_["n_supp"].to(device),data_["task_id"].to(device)
             preds = model(q,p,n)
+            
             # compute loss
-            loss = criterion(preds, data_['query_label'].to(device)) 
+            valid_mask = ~torch.isnan(data_['query_label'])
+            preds = preds[valid_mask]
+            labels = data_['query_label'][valid_mask].to(device)
+            loss = criterion(preds, labels) 
             loss.backward()
             optimizer.step()
             losses.append(loss.cpu().detach())
@@ -127,11 +94,14 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
                 for vdata_ in val_loader:
                     q, p, n, t = vdata_["query_mol"].to(device), vdata_["p_supp"].to(device), vdata_["n_supp"].to(device), vdata_["task_id"].to(device)
                     preds = model(q, p, n, train=False)  
-                    val_loss = criterion(preds, vdata_['query_label'].to(device))
+                    valid_mask = ~torch.isnan(vdata_['query_label']) # filter out NaN labels
+                    preds = preds[valid_mask]
+                    labels = vdata_['query_label'][valid_mask].to(device)
+                    val_loss = criterion(preds, labels)
                     val_losses.append(val_loss.cpu().detach())
                     avg_valLoss = np.mean(val_losses)
 
-        del preds, loss
+        del preds, labels, loss
 
         # eval step on val-set
         daucPR = dauc_pr(model, val_loader, device)
@@ -241,15 +211,18 @@ def dauc_pr(model, loader, device):
     model.train(False)
     task_predictions = defaultdict(list)
     task_targets = defaultdict(list)
-    #threshold = 0.5 no thresholding fopr auc and daucPR
 
     for batch, data_ in enumerate(loader):
         # compute output
-        q, p, n, t = data_["query_mol"].to(device), data_["p_supp"].to(device), data_["n_supp"].to(device),data_["task_id"].to(device)
+        q, p, n, t = data_["query_mol"].to(device), data_["p_supp"].to(device), data_["n_supp"].to(device), data_["task_id"].to(device)
         predictions = model(q, p, n, train=False)
+        valid_mask = ~torch.isnan(data_['query_label'])
+        predictions = predictions[valid_mask]
+        labels = data_['query_label'][valid_mask]
 
+        
         # Append predictions and targets to the corresponding task lists
-        for task_id, pred, target in zip(t.cpu().numpy(), predictions.detach().cpu().numpy(), data_['query_label'].cpu().numpy()):
+        for task_id, pred, target in zip(t.cpu().numpy(), predictions.detach().cpu().numpy(), labels.cpu().numpy()):
             task_predictions[task_id].append(pred)
             task_targets[task_id].append(target)
 
@@ -282,15 +255,17 @@ def auc_score(model, loader, device):
     model.train(False)
     task_predictions = defaultdict(list)
     task_targets = defaultdict(list)
-    #threshold = 0.5 no thresholding fopr auc and daucPR
 
     for batch, data_ in enumerate(loader):
         # compute output
         q, p, n, t = data_["query_mol"].to(device), data_["p_supp"].to(device), data_["n_supp"].to(device),data_["task_id"].to(device)
         predictions = model(q, p, n, train=False)
+        valid_mask = ~torch.isnan(data_['query_label'])
+        predictions = predictions[valid_mask]
+        labels = data_['query_label'][valid_mask]
 
         # Append predictions and targets to the corresponding task lists
-        for task_id, pred, target in zip(t.cpu().numpy(), predictions.detach().cpu().numpy(), data_['query_label'].cpu().numpy()):
+        for task_id, pred, target in zip(t.cpu().numpy(), predictions.detach().cpu().numpy(),labels.cpu().numpy()):
             task_predictions[task_id].append(pred)
             task_targets[task_id].append(target)
 
@@ -314,18 +289,20 @@ def acc_f1(model, loader,device):
     Evaluates per Task and return mean
     """
     model.train(False)
+    threshold = 0.5
     task_predictions = defaultdict(list)
     task_targets = defaultdict(list)
-    threshold = 0.5
-    
+
     for batch, data_ in enumerate(loader):
         # compute output
         q, p, n, t = data_["query_mol"].to(device), data_["p_supp"].to(device), data_["n_supp"].to(device),data_["task_id"].to(device)
-        preds = model(q, p, n, train=False)
-        pred_labels = (preds >= threshold).float()
+        predictions = model(q, p, n, train=False)
+        valid_mask = ~torch.isnan(data_['query_label'])
+        predictions = (predictions[valid_mask]  >= threshold).float()
+        labels = data_['query_label'][valid_mask]
         
         # Append predictions and targets to the corresponding task lists
-        for task_id, pred, target in zip(t.cpu().numpy(), pred_labels.cpu().numpy(), data_['query_label'].cpu().numpy()):
+        for task_id, pred, target in zip(t.cpu().numpy(), predictions.cpu().numpy(), labels.cpu().numpy()):
             task_predictions[task_id].append(pred)
             task_targets[task_id].append(target)
 
@@ -526,7 +503,10 @@ def hpSearchTrain(config, writer, train_loader, val_loader, device, BATCH_SIZE, 
             preds = model(q, p, n)
 
             # Compute loss
-            loss = criterion(preds, data_["query_label"].to(device))
+            valid_mask = ~torch.isnan(data_['query_label'])
+            preds = preds[valid_mask]
+            labels = data_['query_label'][valid_mask].to(device)
+            loss = criterion(preds, labels)
             loss.backward()
             optimizer.step()
             losses.append(loss.cpu().detach())
@@ -554,11 +534,14 @@ def hpSearchTrain(config, writer, train_loader, val_loader, device, BATCH_SIZE, 
                         vdata_["task_id"].to(device),
                     )
                     preds = model(q, p, n, train=False)
-                    val_loss = criterion(preds, vdata_["query_label"].to(device))
+                    valid_mask = ~torch.isnan(vdata_['query_label'])
+                    preds = preds[valid_mask]
+                    labels = vdata_['query_label'][valid_mask].to(device)
+                    val_loss = criterion(preds, labels)
                     val_losses.append(val_loss.cpu().detach())
                     avg_valLoss = np.mean(val_losses)
 
-        del preds, loss
+        del preds, labels, loss
 
         # Evaluation metrics
         daucPR = dauc_pr(model, val_loader, device)

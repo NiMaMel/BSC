@@ -15,7 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 from models.fst_model import Model
 from data.dataset_modul import Dataset
 from utils.preprocessing import preprocessing
-from utils.utils import shutdown_pc, data_split, train_rf, train_model, combined_metrics, eval_rf, mean_scores
+from utils.utils import shutdown_pc, train_rf, train_model, combined_metrics, eval_rf, mean_scores
 
 # dataset paths
 sider_path = "data/datasets/sider.csv"
@@ -36,23 +36,20 @@ else:
 print(f"device set:{torch.cuda.get_device_name(device_id)}\n")
 
 #default config -> best results
-#with open('configs/fst_config.json') as json_file:
-#    model_config = json.load(json_file)
+with open('configs/fst_config.json') as json_file:
+    model_config = json.load(json_file)
 
 #with open('default_config_no_wdecay.json') as json_file:
 #    model_config = json.load(json_file)
 
 # hp search config
-with open('configs/hpSearch_config.json') as json_file:
-    model_config = json.load(json_file)
+#with open('configs/hpSearch_config.json') as json_file:
+#    model_config = json.load(json_file)
 
 # 1. Load Dataset and create Tiplet-Df
 dataset = pd.read_csv(sider_path)
 triplets = [(i,j,row.iloc[j]) for i,row in dataset.iterrows() for j in range(1,len(row))]
 triplet_df = pd.DataFrame(triplets, columns=['mol_id', 'target_id', 'label'])
-
-# 2. Preprocessing
-data = preprocessing(dataset)
 
 # Experiments
 val_scores = pd.DataFrame([])
@@ -66,6 +63,13 @@ for i, seed in enumerate(seeds):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+    # 2. Preprocessing & Datasplit
+    data, dataset_run, train_triplet, val_triplet, test_triplet = preprocessing(dataset, triplet_df, seed)
+
+    train_set = Dataset(data, dataset_run, train_triplet, supp=8, seed=seed)
+    val_set = Dataset(data, dataset_run, val_triplet, supp=8, train=False, seed=seed)
+    test_set = Dataset(data, dataset_run, test_triplet, supp=8, train=False, seed=seed)
+
     # 3. Initialize Model
     model_params = {k: v for k, v in model_config.items() if k not in ['opt_lr', 'weight_decay']}
     model = Model(**model_params) 
@@ -74,13 +78,7 @@ for i, seed in enumerate(seeds):
     criterion = nn.BCELoss()
     optimizer = optim.AdamW(model.parameters(), lr=model_config["opt_lr"], weight_decay=model_config["weight_decay"])
 
-    # 4. Train-split and Dataloader
-    train_triplet, val_triplet, test_triplet = data_split(triplet_df, seed)
-
-    train_set = Dataset(data, dataset, train_triplet, supp=8, seed=seed)
-    val_set = Dataset(data, dataset, val_triplet, supp=8, train=False, seed=seed)
-    test_set = Dataset(data, dataset, test_triplet, supp=8, train=False, seed=seed)
-
+    # 4. Dataloader
     BATCH_SIZE = model_config["batch_size"]
     train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=True)

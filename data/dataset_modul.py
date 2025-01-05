@@ -6,7 +6,28 @@ from torch.utils.data import Dataset
 
 class Dataset(Dataset):
 
-    def __init__(self, data, df, triplet_df, supp=8, train = True,seed=None):
+    def support_mask(self,task, mol_id = None, ex_mol = False):
+    
+            if ex_mol:
+                # p == label with 1 / n == labels with 0 
+                n_idx = self.df.loc[(self.df[self.df.columns[task]] == 0) & (self.df.index != mol_id)].index.to_numpy()
+                p_idx = self.df.loc[(self.df[self.df.columns[task]] == 1) & (self.df.index != mol_id)].index.to_numpy()
+                
+                n_mask = np.random.choice(n_idx, size= self.supp, replace=False)
+                p_mask = np.random.choice(p_idx, size= self.supp, replace=False)
+                    
+            else:
+
+                # p == label with 1 / n == labels with 0 
+                n_idx = self.df.loc[self.df[self.df.columns[task]] == 0].index.to_numpy()
+                p_idx = self.df.loc[self.df[self.df.columns[task]] == 1].index.to_numpy()
+                
+                n_mask = np.random.choice(n_idx, size= self.supp, replace=False)
+                p_mask = np.random.choice(p_idx, size= self.supp, replace=False)
+                
+            return n_mask, p_mask    
+    
+    def __init__(self, data, df, triplet_df, supp=8, train = True, seed=None):
         
         self.data = data
         self.df = df #sider
@@ -37,39 +58,18 @@ class Dataset(Dataset):
             
                     # Delete rows where mol_id == index in indexes_to_delete and task_id == current task_id
                     self.triplet_df = self.triplet_df[~((self.triplet_df['mol_id'] == idx) & (self.triplet_df['target_id'] == task))]
-
-    def support_mask(self,task, mol_id = None, ex_mol = False):
-    
-            if ex_mol:
-                # p == label with 1 / n == labels with 0 
-                n_idx = self.df.loc[(self.df[self.df.columns[task]] == 0) & (self.df.index != mol_id)].index.to_numpy()
-                p_idx = self.df.loc[(self.df[self.df.columns[task]] == 1) & (self.df.index != mol_id)].index.to_numpy()
-                
-                n_mask = np.random.choice(n_idx, size= self.supp, replace=False)
-                p_mask = np.random.choice(p_idx, size= self.supp, replace=False)
-                    
-            else:
-
-                # p == label with 1 / n == labels with 0 
-                n_idx = self.df.loc[self.df[self.df.columns[task]] == 0].index.to_numpy()
-                p_idx = self.df.loc[self.df[self.df.columns[task]] == 1].index.to_numpy()
-                
-                n_mask = np.random.choice(n_idx, size= self.supp, replace=False)
-                p_mask = np.random.choice(p_idx, size= self.supp, replace=False)
-                
-            return n_mask, p_mask
         
     def __len__(self):
         return len(self.triplet_df) 
 
     def __getitem__(self, index):
-
-        if self.train:
-            mol_id = self.triplet_df.iloc[index]["mol_id"]
-            label  = self.triplet_df.iloc[index]["label"]
-            task   = self.triplet_df.iloc[index]["target_id"] # think of also returning the target id for evaluation
-            query  = self.data[mol_id] # get descriptor
-            
+        
+        mol_id =  np.int64(self.triplet_df.iloc[index]["mol_id"])
+        label  = self.triplet_df.iloc[index]["label"]
+        task   = np.int64(self.triplet_df.iloc[index]["target_id"])
+        query  = self.data[mol_id] # get descriptor
+    
+        if self.train:            
             n_mask, p_mask = self.support_mask(task, mol_id, ex_mol = True)
             
             return {
@@ -80,11 +80,6 @@ class Dataset(Dataset):
                 'task_id': torch.tensor(task).float()}
 
         else:
-
-            mol_id = self.triplet_df.iloc[index]["mol_id"]
-            label  = self.triplet_df.iloc[index]["label"]
-            task   = self.triplet_df.iloc[index]["target_id"]
-            query  = self.data[mol_id] # get descriptor
 
             return {
                 'query_mol': torch.from_numpy(query).float(),
