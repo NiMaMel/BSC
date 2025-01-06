@@ -1,0 +1,4 @@
+- Add lr-warmup
+- visualize embeds (already started in notebook)
+- Add new Baseline
+    - test if structure is compatible in Practical Work notebook

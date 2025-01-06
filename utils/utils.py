@@ -3,6 +3,7 @@ import sys
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from datetime import datetime
 import matplotlib.pyplot as plt
 from collections import defaultdict
 
@@ -389,35 +390,36 @@ def eval_rf(y_hat,y_true):
     # Convert the dictionary to a pandas DataFrame
     return pd.DataFrame([metrics_dict])
 
+def mean_scores(val_scores, test_scores, bl_scores,output_csv_path):
 
-def mean_scores(val_scores, test_scores, rf_scores,output_csv_path):
+    parent_dir = "results"
+    date_time = f"{datetime.now().strftime('%d-%m-%Y_%Hh-%Mm')}/"
+    save_dir = os.path.join(parent_dir, date_time)
 
-    save_dir = "results"
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-    os.path.join(save_dir, f"validation_{output_csv_path}")
     
     # write results per seed to csv's
     val_scores.to_csv( os.path.join(save_dir, f"validation_{output_csv_path}"), index=False)
     test_scores.to_csv(os.path.join(save_dir, f"test_{output_csv_path}"), index=False)
-    rf_scores.to_csv(os.path.join(save_dir, f"rf_{output_csv_path}"), index=False)
+    bl_scores.to_csv(os.path.join(save_dir, f"baseline_{output_csv_path}"), index=False)
     
     # Compute mean scores excluding the 'Seed' column
     val_scores_mean = val_scores.drop(columns=['Seed']).mean().to_frame().T
     test_scores_mean = test_scores.drop(columns=['Seed']).mean().to_frame().T
-    rf_scores_mean = rf_scores.drop(columns=['Seed']).mean().to_frame().T
+    bl_scores_mean = bl_scores.drop(columns=['Seed']).mean().to_frame().T
 
     # save results to csv
-    combined_scores = pd.concat([val_scores_mean, test_scores_mean, rf_scores_mean], ignore_index=True)
-    combined_scores.index = ['fs-val', 'fs-test', 'rf']
+    combined_scores = pd.concat([val_scores_mean, test_scores_mean, bl_scores_mean], ignore_index=True)
+    combined_scores.index = ['fs-val', 'fs-test', 'baseline']
     combined_scores.to_csv(f"results/avg_{output_csv_path}")
 
     # Set index name to 'Avg over Seeds'
     val_scores_mean.index = ['Avg over Seeds']
     test_scores_mean.index = ['Avg over Seeds']
-    rf_scores_mean.index = ['Avg over Seeds']
+    bl_scores_mean.index = ['Avg over Seeds']
 
-    return val_scores_mean, test_scores_mean, rf_scores_mean
+    return val_scores_mean, test_scores_mean, bl_scores_mean
 
 # 4. Visualizations
 

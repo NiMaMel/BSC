@@ -86,6 +86,24 @@ for i, seed in enumerate(seeds):
 
     # 5. Modeltraining
 
+    # setup folder for tensorboardlogs
+    parent_dir = "runs/run_seeds/"
+
+    if not os.path.exists(parent_dir):
+        os.makedirs(parent_dir)
+
+    # initalize writer
+    log_dir = os.path.join(parent_dir, f"{datetime.now().strftime('%d-%m-%Y_%Hh-%Mm')}_{seed=}")
+    writer = SummaryWriter(log_dir=log_dir)
+
+    # setup savepath for model
+    model_parent = "trainedModels/run_seeds/"
+
+    if not os.path.exists(model_parent):
+        os.makedirs(model_parent)
+
+    save_path = os.path.join(model_parent, f"model_{seed=}.mdl")
+
     train_config = {
         "model": model,
         "criterion": criterion,
@@ -93,13 +111,10 @@ for i, seed in enumerate(seeds):
         "max_epochs": 50,
         "patience": 4,
         "log_interval": 100,
-        "val_interval": 1,  # set higher to fasten up the process of training
-        "save_path": f"{os.path.join('trainedModels', f'model_{seed}_run{i+1}')}.mdl"
+        "val_interval": 2,  # set higher to fasten up the process of training
+        "save_path": save_path
     }
 
-    log_dir = f"runs/run_seeds_{datetime.now().strftime('%d-%m-%Y_%Hh-%Mm-%Ss')}_{seed}"
-    writer = SummaryWriter(log_dir=log_dir)
-    
     train_model(train_config, writer, train_loader, val_loader, device, BATCH_SIZE)
 
     # 6. Evaluation

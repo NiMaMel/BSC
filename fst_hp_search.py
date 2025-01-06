@@ -1,9 +1,9 @@
 import os
 import time
 import json
-from datetime import datetime
 import numpy as np
 import pandas as pd
+from datetime import datetime
 
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
@@ -22,8 +22,8 @@ from data.dataset_modul import Dataset
 from utils.preprocessing import preprocessing
 from utils.utils import  hpSearchTrain, auc_score, dauc_pr
 
-#seed = 42
-seed = 6265 # worst seed
+seed = 42
+#seed = 6265 # worst seed
 
 np.random.seed(seed)
 torch.manual_seed(seed)
@@ -94,12 +94,29 @@ def objective(trial):
     optimizer = optim.AdamW(model.parameters(), lr=params["opt_lr"], weight_decay=params["weight_decay"])
 
     # 4. Dataloader
-
     BATCH_SIZE = params["batch_size"]
     train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=True)
 
     # 5. Modeltraining
+
+    # setup savepath for tensorboardlogs
+    parent_dir = "runs/hp_search/"
+
+    if not os.path.exists(parent_dir):
+        os.makedirs(parent_dir)
+
+    # initialize writer
+    log_dir = os.path.join(parent_dir, f"{datetime.now().strftime('%d-%m-%Y_%Hh-%Mm')}_{seed=}")
+    writer = SummaryWriter(log_dir=log_dir)
+
+    # setup savepath for model
+    model_parent = "trainedModels/hp_search/"
+
+    if not os.path.exists(model_parent):
+        os.makedirs(model_parent)
+
+    save_path = os.path.join(model_parent, f"model_{seed=}.mdl")
 
     train_config = {
         "model": model,
@@ -109,10 +126,9 @@ def objective(trial):
         "patience": 4,
         "log_interval": 100,
         "val_interval": 2,  # set higher to fasten up the process of training
-        "save_path":  os.path.join("hp_search_runs",os.path.join("models", "model_hps.mdl"))
+        "save_path":  save_path
     }
 
-    writer = SummaryWriter()
     hpSearchTrain(train_config, writer, train_loader, val_loader, device, BATCH_SIZE, trial = trial)
 
     # 6. Evaluation
