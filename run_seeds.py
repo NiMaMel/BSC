@@ -3,6 +3,7 @@ import json
 import numpy as np
 import pandas as pd
 from datetime import datetime
+from dotenv import load_dotenv
 
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
@@ -11,11 +12,12 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 from models.fst_model import Model
 from data.dataset_modul import Dataset
 from utils.preprocessing import preprocessing
-from utils.utils import shutdown_pc, train_rf, train_model, combined_metrics, eval_rf, mean_scores
+from utils.utils import shutdown_pc, formatResults, sendEmail, train_rf, train_model, combined_metrics, eval_rf, mean_scores
 
 # dataset paths
 sider_path = "data/datasets/sider.csv"
@@ -35,16 +37,11 @@ else:
     device = torch.device('cpu')
 print(f"device set:{torch.cuda.get_device_name(device_id)}\n")
 
+config_path = 'configs/fst_config.json' #  'configs/hpSearch_config.json'
+
 #default config -> best results
 with open('configs/fst_config.json') as json_file:
     model_config = json.load(json_file)
-
-#with open('default_config_no_wdecay.json') as json_file:
-#    model_config = json.load(json_file)
-
-# hp search config
-#with open('configs/hpSearch_config.json') as json_file:
-#    model_config = json.load(json_file)
 
 # 1. Load Dataset and create Tiplet-Df
 dataset = pd.read_csv(sider_path)
@@ -77,6 +74,7 @@ for i, seed in enumerate(seeds):
 
     criterion = nn.BCELoss()
     optimizer = optim.AdamW(model.parameters(), lr=model_config["opt_lr"], weight_decay=model_config["weight_decay"])
+    warmup_scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=4, T_mult=1, eta_min=1e-6)
 
     # 4. Dataloader
     BATCH_SIZE = model_config["batch_size"]
@@ -115,7 +113,7 @@ for i, seed in enumerate(seeds):
         "save_path": save_path
     }
 
-    train_model(train_config, writer, train_loader, val_loader, device, BATCH_SIZE)
+    train_model(train_config, writer, train_loader, val_loader, device, BATCH_SIZE, useScheduler = True, scheduler = warmup_scheduler)
 
     # 6. Evaluation
 
@@ -143,8 +141,32 @@ for i, seed in enumerate(seeds):
 
 print("Experiment done!\n")
 
-avg_val_scores, avg_test_scores, avg_rf_scores = mean_scores(val_scores, test_scores, rf_scores,"results_wOLabelEncoding.csv")
-print(f"{avg_val_scores=}\n{avg_test_scores=}\n{avg_rf_scores=}")
+# gather configs
+usedConfig = {
+    'criterion': {
+        'class': criterion.__class__.__name__  # Get criterion class name
+    },
+    'optimizer': {
+        'class': optimizer.__class__.__name__,  # Get optimizer class name
+        'defaults': optimizer.defaults  # Extract default parameters
+    },
+    'model_config': model_config,
+    'training_params': {k: v for k, v in train_config.items() if k not in ['model','criterion','optimizer']}
+    }
+
+avg_val_scores, avg_test_scores, avg_bl_scores = mean_scores(val_scores, test_scores, rf_scores, "results.csv", usedConfig)
+print(f"{avg_val_scores=}\n{avg_test_scores=}\n{avg_bl_scores=}")
+
+# send scores to email
+email_body = formatResults(avg_val_scores,avg_test_scores,avg_bl_scores)
+
+load_dotenv("email.env")
+
+email_sender = os.getenv("EMAIL_SENDER")
+email_password = os.getenv("EMAIL_PASSWORD")
+email_receiver = os.getenv("EMAIL_RECEIVER")
+
+sendEmail(email_body, email_receiver, email_sender, email_password)
 
 # when done shot down pc with 60s delay
-#shutdown_pc()
+shutdown_pc()

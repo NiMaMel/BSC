@@ -1,10 +1,13 @@
 import os
 import sys
+import smtplib
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from datetime import datetime
 import matplotlib.pyplot as plt
 from collections import defaultdict
+from email.mime.text import MIMEText
 
 import optuna
 from optuna.trial import TrialState
@@ -18,7 +21,7 @@ from sklearn.manifold import TSNE
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score, average_precision_score,accuracy_score, f1_score
 
-# 0. Little Helpers
+# 1. Little Helpers
 
 def shutdown_pc():
     """
@@ -27,46 +30,47 @@ def shutdown_pc():
     print("Shutting down the PC...")
     os.system("shutdown /s /t 60")  # 60-second delay before shutdown
 
-# 1. Datasplit Methods
+def formatResults(val_mean,test_mean,bl_mean):
 
-def data_split(df, seed):
+    val_mean_text = val_mean.to_string()
+    test_mean_text = test_mean.to_string()
+    bl_mean_text = bl_mean.to_string()
     
-    np.random.seed(seed)
-        
-    # Unique tasks
-    unique_targets = df['target_id'].unique()
+    email_body = f"""
+    Evaluation Results:
     
-    # Shuffle the unique tasks 
-    np.random.shuffle(unique_targets)
-
-    # Define the proportions for each set
-    train_prop, val_prop, test_prop = 0.6, 0.2, 0.2
-
-    # Calculate the number of tasks for each set
-    n_tasks = len(unique_targets)
-    n_train = int(train_prop * n_tasks)
-    n_val = int(val_prop * n_tasks)
-
-    # Split the tasks into train, validation, and test sets
-    train_targets = unique_targets[:n_train]
-    val_targets = unique_targets[n_train:n_train+n_val]
-    test_targets = unique_targets[n_train+n_val:]
-
-    # Filter the DataFrame based on the selected tasks for each set
-    train_triplet = df[(df['target_id'].isin(train_targets))]
-    val_triplet = df[(df['target_id'].isin(val_targets))]
-    test_triplet = df[(df['target_id'].isin(test_targets))]
+    Validation Mean:
+    {val_mean_text}
     
-    # Display the lengths of the sets
-    #print(f"Train set length: {len(train_triplet)}")
-    #print(f"Validation set length: {len(val_triplet)}")
-    #print(f"Test set length: {len(test_triplet)}")
+    Test Mean:
+    {test_mean_text}
+    
+    Baseline Mean:
+    {bl_mean_text}
+    """
+    return email_body
 
-    return train_triplet, val_triplet, test_triplet
+def sendEmail(email_body, receiver, sender, pw):
+    # Compose email
+    subject = f"results_{datetime.now().strftime('%d-%m-%Y_%Hh-%Mm')}"
+    msg = MIMEText(email_body)
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = receiver
+
+    # Send email via SMTP server
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()  # Secure the connection
+            server.login(sender, pw)  # Login
+            server.sendmail(sender, receiver, msg.as_string())
+            print("Email sent successfully.")
+    except Exception as e:
+        print(f"Error sending email: {e}")
 
 # 2. Train Methods
 
-def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
+def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE, useScheduler = False, scheduler = None):
     """ 
     Training procedure for fstModel (should also be compatible for fsModel).
     """
@@ -94,7 +98,9 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
         losses = []
         val_losses = []
         model.train(True)
-        
+
+        current_lr = optimizer.param_groups[0]['lr']
+
         for batch, data_ in enumerate(train_loader):
             # reset gradients
             optimizer.zero_grad()
@@ -102,8 +108,12 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
             # compute output
             q, p, n, t = data_["query_mol"].to(device),data_["p_supp"].to(device),data_["n_supp"].to(device),data_["task_id"].to(device)
             preds = model(q,p,n)
+            
             # compute loss
-            loss = criterion(preds, data_['query_label'].to(device)) 
+            valid_mask = ~torch.isnan(data_['query_label'])
+            preds = preds[valid_mask]
+            labels = data_['query_label'][valid_mask].to(device)
+            loss = criterion(preds, labels) 
             loss.backward()
             optimizer.step()
             losses.append(loss.cpu().detach())
@@ -111,7 +121,7 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
             
             # plotting
             if batch % log_interval == 0 or batch == BATCH_SIZE - 1:
-                out = f'epoch:{epoch + 1}/{MAX_EPOCHS} batches:{batch:>04d}/{len(train_loader) - 1}'
+                out = f'epoch:{epoch + 1}/{MAX_EPOCHS} batches:{batch:>04d}/{len(train_loader) - 1} current lr:{current_lr:.4e}'
                 out += f' avg-train_loss:{avg_trainLoss:.4f}, avg-val_loss:{avg_valLoss:.4f}, val-auc:{auc:.4f}, val-dauc_pr:{daucPR:.4f}'
 
                 # overwrite what's already been written
@@ -120,6 +130,9 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
                 sys.stdout.write(f'\r{out}')
                 sys.stdout.flush()
 
+        if useScheduler:
+            scheduler.step()
+
         # compute validation loss
         if (epoch + 1) % val_interval == 0:
             model.eval() 
@@ -127,11 +140,14 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
                 for vdata_ in val_loader:
                     q, p, n, t = vdata_["query_mol"].to(device), vdata_["p_supp"].to(device), vdata_["n_supp"].to(device), vdata_["task_id"].to(device)
                     preds = model(q, p, n, train=False)  
-                    val_loss = criterion(preds, vdata_['query_label'].to(device))
+                    valid_mask = ~torch.isnan(vdata_['query_label']) # filter out NaN labels
+                    preds = preds[valid_mask]
+                    labels = vdata_['query_label'][valid_mask].to(device)
+                    val_loss = criterion(preds, labels)
                     val_losses.append(val_loss.cpu().detach())
                     avg_valLoss = np.mean(val_losses)
 
-        del preds, loss
+        del preds, labels, loss
 
         # eval step on val-set
         daucPR = dauc_pr(model, val_loader, device)
@@ -241,15 +257,18 @@ def dauc_pr(model, loader, device):
     model.train(False)
     task_predictions = defaultdict(list)
     task_targets = defaultdict(list)
-    #threshold = 0.5 no thresholding fopr auc and daucPR
 
     for batch, data_ in enumerate(loader):
         # compute output
-        q, p, n, t = data_["query_mol"].to(device), data_["p_supp"].to(device), data_["n_supp"].to(device),data_["task_id"].to(device)
+        q, p, n, t = data_["query_mol"].to(device), data_["p_supp"].to(device), data_["n_supp"].to(device), data_["task_id"].to(device)
         predictions = model(q, p, n, train=False)
+        valid_mask = ~torch.isnan(data_['query_label'])
+        predictions = predictions[valid_mask]
+        labels = data_['query_label'][valid_mask]
 
+        
         # Append predictions and targets to the corresponding task lists
-        for task_id, pred, target in zip(t.cpu().numpy(), predictions.detach().cpu().numpy(), data_['query_label'].cpu().numpy()):
+        for task_id, pred, target in zip(t.cpu().numpy(), predictions.detach().cpu().numpy(), labels.cpu().numpy()):
             task_predictions[task_id].append(pred)
             task_targets[task_id].append(target)
 
@@ -282,15 +301,17 @@ def auc_score(model, loader, device):
     model.train(False)
     task_predictions = defaultdict(list)
     task_targets = defaultdict(list)
-    #threshold = 0.5 no thresholding fopr auc and daucPR
 
     for batch, data_ in enumerate(loader):
         # compute output
         q, p, n, t = data_["query_mol"].to(device), data_["p_supp"].to(device), data_["n_supp"].to(device),data_["task_id"].to(device)
         predictions = model(q, p, n, train=False)
+        valid_mask = ~torch.isnan(data_['query_label'])
+        predictions = predictions[valid_mask]
+        labels = data_['query_label'][valid_mask]
 
         # Append predictions and targets to the corresponding task lists
-        for task_id, pred, target in zip(t.cpu().numpy(), predictions.detach().cpu().numpy(), data_['query_label'].cpu().numpy()):
+        for task_id, pred, target in zip(t.cpu().numpy(), predictions.detach().cpu().numpy(),labels.cpu().numpy()):
             task_predictions[task_id].append(pred)
             task_targets[task_id].append(target)
 
@@ -314,18 +335,20 @@ def acc_f1(model, loader,device):
     Evaluates per Task and return mean
     """
     model.train(False)
+    threshold = 0.5
     task_predictions = defaultdict(list)
     task_targets = defaultdict(list)
-    threshold = 0.5
-    
+
     for batch, data_ in enumerate(loader):
         # compute output
         q, p, n, t = data_["query_mol"].to(device), data_["p_supp"].to(device), data_["n_supp"].to(device),data_["task_id"].to(device)
-        preds = model(q, p, n, train=False)
-        pred_labels = (preds >= threshold).float()
+        predictions = model(q, p, n, train=False)
+        valid_mask = ~torch.isnan(data_['query_label'])
+        predictions = (predictions[valid_mask]  >= threshold).float()
+        labels = data_['query_label'][valid_mask]
         
         # Append predictions and targets to the corresponding task lists
-        for task_id, pred, target in zip(t.cpu().numpy(), pred_labels.cpu().numpy(), data_['query_label'].cpu().numpy()):
+        for task_id, pred, target in zip(t.cpu().numpy(), predictions.cpu().numpy(), labels.cpu().numpy()):
             task_predictions[task_id].append(pred)
             task_targets[task_id].append(target)
 
@@ -412,35 +435,40 @@ def eval_rf(y_hat,y_true):
     # Convert the dictionary to a pandas DataFrame
     return pd.DataFrame([metrics_dict])
 
+def mean_scores(val_scores, test_scores, bl_scores, output_csv_path, usedConfig):
 
-def mean_scores(val_scores, test_scores, rf_scores,output_csv_path):
+    parent_dir = "results/"
+    date_time = f"{datetime.now().strftime('%d-%m-%Y_%Hh-%Mm')}/"
+    save_dir = os.path.join(parent_dir, date_time)
 
-    save_dir = "results"
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-    os.path.join(save_dir, f"validation_{output_csv_path}")
     
     # write results per seed to csv's
     val_scores.to_csv( os.path.join(save_dir, f"validation_{output_csv_path}"), index=False)
     test_scores.to_csv(os.path.join(save_dir, f"test_{output_csv_path}"), index=False)
-    rf_scores.to_csv(os.path.join(save_dir, f"rf_{output_csv_path}"), index=False)
+    bl_scores.to_csv(os.path.join(save_dir, f"baseline_{output_csv_path}"), index=False)
+
+    # write config to result folder
+    with open(os.path.join(save_dir, usedConfig), "w") as outfile: 
+        json.dump(used_config, outfile)
     
     # Compute mean scores excluding the 'Seed' column
     val_scores_mean = val_scores.drop(columns=['Seed']).mean().to_frame().T
     test_scores_mean = test_scores.drop(columns=['Seed']).mean().to_frame().T
-    rf_scores_mean = rf_scores.drop(columns=['Seed']).mean().to_frame().T
+    bl_scores_mean = bl_scores.drop(columns=['Seed']).mean().to_frame().T
 
     # save results to csv
-    combined_scores = pd.concat([val_scores_mean, test_scores_mean, rf_scores_mean], ignore_index=True)
-    combined_scores.index = ['fs-val', 'fs-test', 'rf']
+    combined_scores = pd.concat([val_scores_mean, test_scores_mean, bl_scores_mean], ignore_index=True)
+    combined_scores.index = ['fs-val', 'fs-test', 'baseline']
     combined_scores.to_csv(f"results/avg_{output_csv_path}")
 
     # Set index name to 'Avg over Seeds'
     val_scores_mean.index = ['Avg over Seeds']
     test_scores_mean.index = ['Avg over Seeds']
-    rf_scores_mean.index = ['Avg over Seeds']
+    bl_scores_mean.index = ['Avg over Seeds']
 
-    return val_scores_mean, test_scores_mean, rf_scores_mean
+    return val_scores_mean, test_scores_mean, bl_scores_mean
 
 # 4. Visualizations
 
@@ -526,7 +554,10 @@ def hpSearchTrain(config, writer, train_loader, val_loader, device, BATCH_SIZE, 
             preds = model(q, p, n)
 
             # Compute loss
-            loss = criterion(preds, data_["query_label"].to(device))
+            valid_mask = ~torch.isnan(data_['query_label'])
+            preds = preds[valid_mask]
+            labels = data_['query_label'][valid_mask].to(device)
+            loss = criterion(preds, labels)
             loss.backward()
             optimizer.step()
             losses.append(loss.cpu().detach())
@@ -554,11 +585,14 @@ def hpSearchTrain(config, writer, train_loader, val_loader, device, BATCH_SIZE, 
                         vdata_["task_id"].to(device),
                     )
                     preds = model(q, p, n, train=False)
-                    val_loss = criterion(preds, vdata_["query_label"].to(device))
+                    valid_mask = ~torch.isnan(vdata_['query_label'])
+                    preds = preds[valid_mask]
+                    labels = vdata_['query_label'][valid_mask].to(device)
+                    val_loss = criterion(preds, labels)
                     val_losses.append(val_loss.cpu().detach())
                     avg_valLoss = np.mean(val_losses)
 
-        del preds, loss
+        del preds, labels, loss
 
         # Evaluation metrics
         daucPR = dauc_pr(model, val_loader, device)

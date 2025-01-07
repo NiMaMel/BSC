@@ -1,11 +1,14 @@
 import os
 import sys
+import json
+import smtplib
 import numpy as np
 import pandas as pd
 import seaborn as sns
 from datetime import datetime
 import matplotlib.pyplot as plt
 from collections import defaultdict
+from email.mime.text import MIMEText
 
 import optuna
 from optuna.trial import TrialState
@@ -28,9 +31,47 @@ def shutdown_pc():
     print("Shutting down the PC...")
     os.system("shutdown /s /t 60")  # 60-second delay before shutdown
 
+def formatResults(val_mean,test_mean,bl_mean):
+
+    val_mean_text = val_mean.to_string()
+    test_mean_text = test_mean.to_string()
+    bl_mean_text = bl_mean.to_string()
+    
+    email_body = f"""
+    Evaluation Results:
+    
+    Validation Mean:
+    {val_mean_text}
+    
+    Test Mean:
+    {test_mean_text}
+    
+    Baseline Mean:
+    {bl_mean_text}
+    """
+    return email_body
+
+def sendEmail(email_body, receiver, sender, pw):
+    # Compose email
+    subject = f"results_{datetime.now().strftime('%d-%m-%Y_%Hh-%Mm')}"
+    msg = MIMEText(email_body)
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = receiver
+
+    # Send email via SMTP server
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()  # Secure the connection
+            server.login(sender, pw)  # Login
+            server.sendmail(sender, receiver, msg.as_string())
+            print("Email sent successfully.")
+    except Exception as e:
+        print(f"Error sending email: {e}")
+
 # 2. Train Methods
 
-def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
+def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE, useScheduler = False, scheduler = None):
     """ 
     Training procedure for fstModel (should also be compatible for fsModel).
     """
@@ -58,7 +99,9 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
         losses = []
         val_losses = []
         model.train(True)
-        
+
+        current_lr = optimizer.param_groups[0]['lr']
+
         for batch, data_ in enumerate(train_loader):
             # reset gradients
             optimizer.zero_grad()
@@ -79,7 +122,7 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
             
             # plotting
             if batch % log_interval == 0 or batch == BATCH_SIZE - 1:
-                out = f'epoch:{epoch + 1}/{MAX_EPOCHS} batches:{batch:>04d}/{len(train_loader) - 1}'
+                out = f'epoch:{epoch + 1}/{MAX_EPOCHS} batches:{batch:>04d}/{len(train_loader) - 1} current lr:{current_lr:.4e}'
                 out += f' avg-train_loss:{avg_trainLoss:.4f}, avg-val_loss:{avg_valLoss:.4f}, val-auc:{auc:.4f}, val-dauc_pr:{daucPR:.4f}'
 
                 # overwrite what's already been written
@@ -87,6 +130,9 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE):
                 # write 'out' to stdout
                 sys.stdout.write(f'\r{out}')
                 sys.stdout.flush()
+
+        if useScheduler:
+            scheduler.step()
 
         # compute validation loss
         if (epoch + 1) % val_interval == 0:
@@ -390,9 +436,9 @@ def eval_rf(y_hat,y_true):
     # Convert the dictionary to a pandas DataFrame
     return pd.DataFrame([metrics_dict])
 
-def mean_scores(val_scores, test_scores, bl_scores,output_csv_path):
+def mean_scores(val_scores, test_scores, bl_scores, output_csv_path, usedConfig):
 
-    parent_dir = "results"
+    parent_dir = "results/run_seeds/"
     date_time = f"{datetime.now().strftime('%d-%m-%Y_%Hh-%Mm')}/"
     save_dir = os.path.join(parent_dir, date_time)
 
@@ -403,6 +449,10 @@ def mean_scores(val_scores, test_scores, bl_scores,output_csv_path):
     val_scores.to_csv( os.path.join(save_dir, f"validation_{output_csv_path}"), index=False)
     test_scores.to_csv(os.path.join(save_dir, f"test_{output_csv_path}"), index=False)
     bl_scores.to_csv(os.path.join(save_dir, f"baseline_{output_csv_path}"), index=False)
+
+    # write config to result folder
+    with open(os.path.join(save_dir, "usedConfig.json"), "w") as outfile:
+        json.dump(usedConfig, outfile)
     
     # Compute mean scores excluding the 'Seed' column
     val_scores_mean = val_scores.drop(columns=['Seed']).mean().to_frame().T
