@@ -38,10 +38,11 @@ else:
 print(f"device set:{torch.cuda.get_device_name(device_id)}\n")
 
 config_path = 'configs/fst_config.json' #  'configs/hpSearch_config.json'
-
-#default config -> best results
-with open('configs/fst_config.json') as json_file:
+with open(config_path) as json_file:
     model_config = json.load(json_file)
+
+# only uncomment for test purposes
+#model_config["encodeLabels"] = False
 
 # 1. Load Dataset and create Tiplet-Df
 dataset = pd.read_csv(sider_path)
@@ -51,7 +52,7 @@ triplet_df = pd.DataFrame(triplets, columns=['mol_id', 'target_id', 'label'])
 # Experiments
 val_scores = pd.DataFrame([])
 test_scores = pd.DataFrame([])
-rf_scores = pd.DataFrame([])
+bl_scores = pd.DataFrame([])
 
 for i, seed in enumerate(seeds):
     print(f"Running experiment {i+1} with seed {seed}")
@@ -113,7 +114,7 @@ for i, seed in enumerate(seeds):
         "save_path": save_path
     }
 
-    train_model(train_config, writer, train_loader, val_loader, device, BATCH_SIZE, useScheduler = True, scheduler = warmup_scheduler)
+    train_model(train_config, writer, train_loader, val_loader, device, BATCH_SIZE, useScheduler = False, scheduler = warmup_scheduler)
 
     # 6. Evaluation
 
@@ -128,13 +129,13 @@ for i, seed in enumerate(seeds):
 
     # 7. Compare to RF Baseline
     y_hats_proba, y_hats_class, true_labels = train_rf(dataset, data, test_triplet, seed, 1000, shuffle=True)
-    rf_score = eval_rf(y_hats_class, true_labels)
-    rf_score.insert(0, "Seed", seed)
+    bl_score = eval_rf(y_hats_class, true_labels)
+    bl_score.insert(0, "Seed", seed)
 
     # update Score-Df's
     val_scores = pd.concat([val_scores, val_score])
     test_scores = pd.concat([test_scores, test_score])
-    rf_scores = pd.concat([rf_scores, rf_score])
+    bl_scores = pd.concat([bl_scores, bl_score])
 
     print(f"Current Evaluations: Test-AUC:{test_score['AUC']}, Test-D-AUC PR:{test_score['D-AUC PR']}")
     print(f"Experiment {i+1} finished!\n")
@@ -154,7 +155,7 @@ usedConfig = {
     'training_params': {k: v for k, v in train_config.items() if k not in ['model','criterion','optimizer']}
     }
 
-avg_val_scores, avg_test_scores, avg_bl_scores = mean_scores(val_scores, test_scores, rf_scores, "results.csv", usedConfig)
+avg_val_scores, avg_test_scores, avg_bl_scores = mean_scores(val_scores, test_scores, bl_scores, "results.csv", usedConfig)
 print(f"{avg_val_scores=}\n{avg_test_scores=}\n{avg_bl_scores=}")
 
 # send scores to email
@@ -168,5 +169,5 @@ email_receiver = os.getenv("EMAIL_RECEIVER")
 
 sendEmail(email_body, email_receiver, email_sender, email_password)
 
-# when done shot down pc with 60s delay
+# when done shut down pc with 60s delay
 shutdown_pc()

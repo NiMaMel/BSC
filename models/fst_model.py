@@ -63,7 +63,7 @@ class Model(nn.Module):
             nn.Linear(self.wideDim , 1)
             )
 
-    def forward(self, query_mol, p_supp, n_supp, train=True):
+    def forward(self, query_mol, p_supp, n_supp, onlyEmbeds = False ,train=True):
 
         # Step 1: Encode query, negative and positive supportset: 
         p = self.ln(self.encoder(p_supp))
@@ -92,6 +92,9 @@ class Model(nn.Module):
         
         # Step 5: Pass through Transformer encoder
         out = self.transformer_encoder(q_s)
+
+        if onlyEmbeds:
+            return out[:, 0, :]
         
         # Step 6: Get logits via Sigmoid Function of the first dim of MLP head
         logits = torch.sigmoid(self.mlp(out[:, 0, :])).squeeze(1) # Shape: (batch_size) 

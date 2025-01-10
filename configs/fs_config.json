@@ -1,6 +1,6 @@
 {
     "opt_lr": 1e-03,
-    "weight_decay": 1e-05,
+    "weight_decay": 0,
     "batch_size": 32,
     "input_dim": 2248,
     "hidden_dim": 1124,

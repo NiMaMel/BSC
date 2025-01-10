@@ -1,5 +1,6 @@
 import os
 import sys
+import glob
 import json
 import smtplib
 import numpy as np
@@ -7,6 +8,7 @@ import pandas as pd
 import seaborn as sns
 from datetime import datetime
 import matplotlib.pyplot as plt
+from scipy.stats import wilcoxon
 from collections import defaultdict
 from email.mime.text import MIMEText
 
@@ -84,7 +86,6 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE, us
     log_interval = config['log_interval']
     val_interval = config['val_interval']  
     save_path = config['save_path']
-    folder_path = os.path.dirname(save_path)  
     
     best_val_score = None
     val_loss = 0
@@ -165,17 +166,14 @@ def train_model(config, writer, train_loader, val_loader, device, BATCH_SIZE, us
         writer.add_scalar(f"{model.__class__.__name__} Validation ΔAUC-PR", daucPR, epoch)
 
         # saving best model
-            # think about adapting the stopping criteria: relative improvement (e.g. at least 1%), min. improvement threshhold (e.g stopping_metric > best_val_score + delta)
-            # also more patience in the beginning and less once it seems stable (e.g. after 20 epochs)
         if best_val_score is None or best_val_score < stopping_metric:
             best_val_score = stopping_metric
-
-            # Create the folder if it doesn't exist
-            if not os.path.exists(folder_path):
-                os.makedirs(folder_path)
-            
             torch.save(model.state_dict(), save_path)     
             pat_log = 0
+
+        # think about adapting the stopping criteria: 
+            # - relative improvement (e.g. at least 1%), min. improvement threshhold (e.g stopping_metric > best_val_score + delta)
+            # - also more patience in the beginning and less once it seems stable (e.g. after 20 epochs)
        
         else:
             pat_log += 1
@@ -461,8 +459,8 @@ def mean_scores(val_scores, test_scores, bl_scores, output_csv_path, usedConfig)
 
     # save results to csv
     combined_scores = pd.concat([val_scores_mean, test_scores_mean, bl_scores_mean], ignore_index=True)
-    combined_scores.index = ['fs-val', 'fs-test', 'baseline']
-    combined_scores.to_csv(f"results/avg_{output_csv_path}")
+    combined_scores.index = ['fst-val', 'fst-test', 'baseline']
+    combined_scores.to_csv(os.path.join(save_dir, f"avg_{output_csv_path}"), index=False)
 
     # Set index name to 'Avg over Seeds'
     val_scores_mean.index = ['Avg over Seeds']
@@ -470,6 +468,68 @@ def mean_scores(val_scores, test_scores, bl_scores, output_csv_path, usedConfig)
     bl_scores_mean.index = ['Avg over Seeds']
 
     return val_scores_mean, test_scores_mean, bl_scores_mean
+
+def meanStdSeeds(dir):
+    
+    # Initialize a list to store results
+    results = []
+    
+    # Loop through all CSV files in the folder
+    for file_path in glob.glob(os.path.join(dir, "*.csv")):
+        # Extract the model name from the file path
+        file_name = os.path.basename(file_path)
+        model_name = file_name.replace("_results.csv", "")
+        
+        # Read the CSV file
+        df = pd.read_csv(file_path)
+        
+        # Calculate mean and std for AUC and D-AUC PR, convert to %, and round to 2 decimals
+        auc_mean = round(df['AUC'].mean() * 100, 2)
+        auc_std = round(df['AUC'].std() * 100, 2)
+        daucpr_mean = round(df['D-AUC PR'].mean() * 100, 2)
+        daucpr_std = round(df['D-AUC PR'].std() * 100, 2)
+        
+        # Append the results
+        results.append({
+            "model": model_name,
+            "auc std (%)": auc_std,
+            "auc avg (%)": auc_mean,
+            "daucPr std (%)": daucpr_std,
+            "daucPr avg (%)": daucpr_mean
+        })
+    
+    # Create a DataFrame to store the aggregated results
+    summary_df = pd.DataFrame(results)
+    
+    return summary_df
+
+def wilcoxonComparison(pathOne,pathTwo):
+
+    # choose model A and B to compate
+    modelAResults  = pd.read_csv(pathOne)
+    modelBResults = pd.read_csv(pathTwo)
+    
+    # daucPr
+    aDauc = modelAResults['D-AUC PR']
+    bDauc = modelBResults['D-AUC PR']
+    
+    # auc
+    aAuc = modelAResults['AUC']
+    bAuc = modelBResults['AUC']
+    
+    # Perform the Wilcoxon signed-rank test for each metric
+    dauc_stat, dauc_p_value = wilcoxon(aDauc, bDauc)
+    auc_stat, auc_p_value = wilcoxon(aAuc, bAuc)
+    
+    # Create a DataFrame to store results
+    wilcoxonResults = pd.DataFrame({
+        "Metric": ["D-AUC PR", "AUC"],
+        "Wilcoxon Stat": [dauc_stat, auc_stat],
+        "P-value": [dauc_p_value, auc_p_value]
+    })
+
+    return wilcoxonResults
+    
 
 # 4. Visualizations
 
@@ -485,13 +545,17 @@ def plot_tsne_embeddings(embed, encoded_embed, labels, task_name, title, seed, s
     palette = sns.color_palette("colorblind")
     palette_dict = {0: palette[0], 1: palette[4]}  # Assuming 0 is Inactive and 1 is Active
 
+    # Shorten task name if it exceeds max length
+    max_task_name_len = 12
+    legend_title = task_name if len(task_name) <= max_task_name_len else f"{task_name[:max_task_name_len]}..."
+    
     # Plotting t-SNE of Unscaled Embeddings
     sns.scatterplot(x=X_tsne_embed[:, 0], y=X_tsne_embed[:, 1], hue=labels, palette=palette_dict, alpha=0.7, s=50, ax=axs[0])
     axs[0].set_title('Embeddings before Training')
     axs[0].set_xlabel('TSNE-Component 1')
     axs[0].set_ylabel('TSNE-Component 2')
     handles, _ = axs[0].get_legend_handles_labels()
-    axs[0].legend(handles=handles, labels=['Inactive', 'Active'], title=f'{task_name}', loc='upper right')
+    axs[0].legend(handles=handles, labels=['Inactive', 'Active'], title=f'{legend_title}', loc='upper right')
     axs[0].grid(True)
     
     # Plotting t-SNE of Scaled Embeddings
@@ -500,14 +564,19 @@ def plot_tsne_embeddings(embed, encoded_embed, labels, task_name, title, seed, s
     axs[1].set_xlabel('TSNE-Component 1')
     axs[1].set_ylabel('TSNE-Component 2')
     handles, _ = axs[1].get_legend_handles_labels()
-    axs[1].legend(handles=handles, labels=['Inactive', 'Active'], title=f'{task_name}', loc='upper right')
+    axs[1].legend(handles=handles, labels=['Inactive', 'Active'], title=f'{legend_title}', loc='upper right')
     axs[1].grid(True)
 
     plt.suptitle(title)
     plt.tight_layout()
 
     if save:
-        plt.savefig('visualizations/embed_comparison.png')
+        save_dir = 'visualizations'
+        
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+            
+        plt.savefig(os.path.join(save_dir, "embed_comparison.png")) 
     
     plt.show()
 
@@ -526,8 +595,7 @@ def hpSearchTrain(config, writer, train_loader, val_loader, device, BATCH_SIZE, 
     log_interval = config['log_interval']
     val_interval = config['val_interval']
     save_path = config['save_path']
-    folder_path = os.path.dirname(save_path)
-
+    
     auc= 0
     daucPR = 0
     pat_log = 0
@@ -621,10 +689,6 @@ def hpSearchTrain(config, writer, train_loader, val_loader, device, BATCH_SIZE, 
         # Save best model
         if best_val_score is None or best_val_score < stopping_metric:
             best_val_score = stopping_metric
-
-            # Create the folder if it doesn't exist
-            if not os.path.exists(folder_path):
-                os.makedirs(folder_path)
 
             torch.save(model.state_dict(), save_path)
             pat_log = 0

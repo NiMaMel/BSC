@@ -43,7 +43,7 @@ class Dataset(Dataset):
         if not self.train:
             
             self.tasks = self.triplet_df['target_id'].unique()
-            self.evalsets = { task : {'n_supp': None, 'p_supp': None} for task in self.tasks}
+            self.evalsets = { task : {'n_supp': None, 'p_supp': None, 'n_indexes': None, 'p_indexes': None} for task in self.tasks}
             
             for task in self.tasks:
 
@@ -52,8 +52,11 @@ class Dataset(Dataset):
                 # update
                 self.evalsets[task]["n_supp"] = torch.from_numpy(data[n_mask]).float()
                 self.evalsets[task]["p_supp"] = torch.from_numpy(data[p_mask]).float()
-            
+                self.evalsets[task]["n_indexes"] = n_mask
+                self.evalsets[task]["p_indexes"] = p_mask
+                
                 masks = np.concatenate([n_mask, p_mask]).tolist()
+                
                 for idx in masks:
             
                     # Delete rows where mol_id == index in indexes_to_delete and task_id == current task_id
@@ -62,6 +65,25 @@ class Dataset(Dataset):
     def __len__(self):
         return len(self.triplet_df) 
 
+    def get_support_indexes(self, task):
+        """
+        Get the indexes of the positive and negative support sets for a given task.
+        
+        Args:
+            task (int): The task identifier.
+        
+        Returns:
+            dict: A dictionary with keys 'n_indexes' and 'p_indexes', containing
+                  the negative and positive support set indexes, respectively.
+        """
+        if not self.train:
+            return {
+                'n_indexes': self.evalsets[task]["n_indexes"],
+                'p_indexes': self.evalsets[task]["p_indexes"]
+            }
+        else:
+            raise ValueError("Support indexes are only available in evaluation mode (train=False).")
+    
     def __getitem__(self, index):
         
         mol_id =  np.int64(self.triplet_df.iloc[index]["mol_id"])

@@ -31,13 +31,13 @@ class Model(nn.Module):
         self.cosine = nn.CosineSimilarity(dim = 0) #(dim=1, eps=1e-08)
         # dot used in forward
     
-    def forward(self, query_mol, p_supp, n_supp,train=True):
+    def forward(self, query_mol, p_supp, n_supp, train=True):
 
         # Step 1 & 2: 
         p = self.ln(self.encoder(p_supp))
         n = self.ln(self.encoder(n_supp))
-        q = self.ln(self.encoder(query_mol))
-
+        q = self.ln(self.encoder(query_mol)) 
+        
         # match the number of dimensions of p_supp and n_supp
         q = q.unsqueeze(1)  
 
@@ -55,4 +55,4 @@ class Model(nn.Module):
         # step 5:
         prediction = torch.sigmoid(q_p-q_n)
         
-        return prediction 
+        return prediction
